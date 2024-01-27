@@ -1,8 +1,6 @@
 import React, {useState, useEffect} from 'react';
 import {Pressable, StyleSheet, Text} from 'react-native';
-import RNFS from 'react-native-fs';
-import {WebClient} from '@slack/web-api';
-import {AsyncStorage, LogBox} from 'react-native';
+import RNFS, {ReadDirItem} from 'react-native-fs';
 
 interface UploadButtonProps {
   disabled: boolean;
@@ -17,27 +15,6 @@ const UploadButton: React.FC<UploadButtonProps> = ({
 }) => {
   const [buttonColor, setButtonColor] = useState<string>('#2d2d2d');
 
-  LogBox.ignoreLogs(['Setting a timer']);
-
-  const originalConsoleLog = console.log;
-
-  console.log = (...args) => {
-    const containsAsyncStorage = args.some(
-      arg =>
-        arg &&
-        typeof arg === 'object' &&
-        arg.constructor === Object &&
-        arg.AsyncStorage,
-    );
-
-    if (containsAsyncStorage) {
-      console.trace();
-    }
-
-    // Call the original console.log
-    originalConsoleLog(...args);
-  };
-
   useEffect(() => {
     setButtonColor(disabled ? '#2d2d2d' : '#007AFF');
   }, [disabled]);
@@ -46,68 +23,46 @@ const UploadButton: React.FC<UploadButtonProps> = ({
     try {
       if (dirName && channel) {
         const files = await RNFS.readDir(dirName);
-        const sortedFiles = filterAndSortFiles(files.map(file => file.name));
-        console.log(`${dirName}/${sortedFiles[0]}`);
+        const imageFiles = files.filter(
+          file =>
+            file.isFile() &&
+            (file.name.endsWith('.JPG') || file.name.endsWith('.jpg')),
+        );
 
-        const fileUploads: {filename: string; file: string}[] = [];
-
-        for (let i = 0; i < sortedFiles.length; i++) {
-          const filename = sortedFiles[i];
-          const file = `${dirName}/${filename}`;
-          fileUploads.push({file, filename});
-
-          if ((i + 1) % 14 === 0 || i === sortedFiles.length - 1) {
-            await uploadFileToSlackChannel(
-              'xoxb-1667223032755-4207981755234-d0WeP8JX8TOT3IwSG8Z63RKG', // DO NOT COMMIT THIS TOKEN!!!
-              fileUploads,
-            );
-            fileUploads.length = 0;
-          }
+        const batchSize = 10;
+        for (let i = 0; i < imageFiles.length; i += batchSize) {
+          const batch = imageFiles.slice(i, i + batchSize);
+          await uploadBatch(batch, channel);
         }
       } else {
-        console.log('Please select both a folder and a valid user token.');
+        console.log('Please select both a folder and a channel.');
       }
     } catch (error) {
-      console.log('Error uploading file:', error);
+      console.log('Error uploading file to server:', error);
     }
   };
 
-  const filterAndSortFiles = (files: string[]): string[] => {
-    const pattern: RegExp = /^IMG_.+\.JPG$/;
-    const filteredFiles: string[] = files.filter((file: string) =>
-      pattern.test(file),
-    );
-    return filteredFiles.sort();
-  };
+  const uploadBatch = async (batch: ReadDirItem[], channelId: string) => {
+    const formData = new FormData();
+    formData.append('channel', channelId);
 
-  const uploadFileToSlackChannel = async (
-    token: string,
-    fileUploads: object[],
-  ): Promise<void> => {
-    try {
-      const currentDate = new Date().toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
+    batch.forEach(file => {
+      formData.append('files', {
+        uri: 'file://' + file.path,
+        type: 'image/jpeg',
+        name: file.name,
       });
+    });
 
-      const client = new WebClient(token);
+    const response = await fetch('http://localhost:3000/api/uploadFiles', {
+      method: 'POST',
+      body: formData,
+    });
 
-      await client.files.uploadV2({
-        channel_id: channel,
-        initial_comment: currentDate,
-        file_uploads: fileUploads,
-      });
-
-      console.log('Uploaded files to Slack');
-    } catch (error: any) {
-      if (error.code === 'slack_error_code') {
-        console.error(`Error uploading files to Slack: ${error.message}`);
-      } else {
-        console.error(`Unexpected error: ${error}`);
-      }
-      throw error;
+    if (response.ok) {
+      console.log('Upload successful!');
+    } else {
+      console.log('Upload failed!');
     }
   };
 
